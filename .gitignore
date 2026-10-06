@@ -1,0 +1,18 @@
+# harness state (개인용)
+.harness/state/*
+!.harness/state/.gitkeep
+
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+
+# claude local
+.claude/settings.local.json
+
+# personal
+CLAUDE.local.md
+AGENTS.override.md

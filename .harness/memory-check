@@ -1,0 +1,73 @@
+#!/bin/sh
+# 장기기억 신선도 검사 (경고만, 항상 exit 0).
+# 1) codemap.md / current.md 가 backtick으로 가리키는 경로가 아직 존재하는가
+# 2) codemap이 가리키는 파일의 내용이 마지막 확인(--stamp) 이후 바뀌었는가  ← codemap.lock 과 비교
+# 3) codemap의 "Last verified" 이후 커밋이 많이 쌓였는가 (git 있을 때)
+# usage: .harness/memory-check [-q]      검사 (-q: 경고가 없으면 아무것도 출력하지 않음)
+#        .harness/memory-check --stamp   codemap의 내용을 실제 코드와 대조해 확인한 뒤 실행:
+#                                        현재 내용 지문을 codemap.lock 에 기록하고 Last verified 를 오늘로 바꾼다
+
+cd "$(dirname "$0")/.." || exit 0
+CM=.harness/project/codemap.md
+LOCK=.harness/project/codemap.lock
+STALE_COMMITS=${MEMORY_STALE_COMMITS:-50}
+
+# backtick 안의 토큰 중 경로처럼 보이는 것만 출력
+paths_in() {
+  [ -f "$1" ] || return 0
+  grep -o '`[^` ]*`' "$1" | tr -d '`' | sed 's/:[0-9][0-9,:-]*$//' | sort -u | while IFS= read -r p; do
+    case "$p" in
+      ''|/*|\<*|*\**|*\$*|*\<*|*\|*|http*|.harness/*|*…*) continue ;;
+      */*|*.kt|*.kts|*.java|*.py|*.ts|*.tsx|*.js|*.go|*.rs|*.sql|*.xml|*.yml|*.yaml|*.gradle|*.md) echo "$p" ;;
+    esac
+  done
+}
+# 내용 지문: 파일은 내용, 디렉터리는 바로 아래 항목 목록 (파일 추가/삭제 감지)
+fingerprint() {
+  if [ -d "$1" ]; then ls -1 "$1" | cksum | cut -d' ' -f1
+  else cksum < "$1" | cut -d' ' -f1; fi
+}
+
+if [ "${1:-}" = "--stamp" ]; then
+  [ -f "$CM" ] || { echo "MEMORY: no codemap"; exit 0; }
+  : > "$LOCK.tmp"
+  paths_in "$CM" | while IFS= read -r p; do
+    [ -e "$p" ] && printf '%s\t%s\n' "$(fingerprint "$p")" "$p" >> "$LOCK.tmp"
+  done
+  { echo "# codemap.md 가 가리키는 경로의 내용 지문. .harness/memory-check --stamp 가 만든다. 직접 고치지 않는다."; cat "$LOCK.tmp"; } > "$LOCK"; rm -f "$LOCK.tmp"
+  TODAY=$(date +%Y-%m-%d)
+  sed "s/^Last verified:.*/Last verified: $TODAY/" "$CM" > "$CM.tmp" && mv "$CM.tmp" "$CM"
+  echo "MEMORY: stamped $(grep -vc '^#' "$LOCK") path(s), Last verified: $TODAY"
+  exit 0
+fi
+
+QUIET=${1:-}
+OUT=$(
+  for f in "$CM" .harness/state/current.md; do
+    paths_in "$f" | while IFS= read -r p; do
+      [ -e "$p" ] || echo "MEMORY WARN: $f references missing path: $p"
+    done
+  done
+  if [ -f "$CM" ] && [ -f "$LOCK" ]; then
+    grep -v '^#' "$LOCK" | while IFS="$(printf '\t')" read -r sum p; do
+      [ -e "$p" ] || continue                                   # 없어진 경로는 위에서 이미 경고
+      paths_in "$CM" | grep -qxF "$p" || continue               # codemap에서 빠진 경로는 무시
+      [ "$(fingerprint "$p")" = "$sum" ] || echo "MEMORY WARN: $p changed since codemap was last verified — re-check the codemap entries that mention it"
+    done
+    paths_in "$CM" | while IFS= read -r p; do
+      [ -e "$p" ] && ! grep -qF "$(printf '\t')$p" "$LOCK" && echo "MEMORY WARN: codemap entry not yet verified (no stamp): $p"
+    done
+  elif [ -f "$CM" ] && [ -n "$(paths_in "$CM")" ]; then
+    echo "MEMORY WARN: codemap has never been stamped — content changes cannot be detected (verify it, then run .harness/memory-check --stamp)"
+  fi
+  if [ -f "$CM" ] && git rev-parse HEAD >/dev/null 2>&1; then
+    D=$(grep -m1 '^Last verified:' "$CM" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}')
+    if [ -n "$D" ]; then
+      N=$(git log --oneline --since="$D 23:59:59" 2>/dev/null | wc -l | tr -d ' ')
+      [ "$N" -ge "$STALE_COMMITS" ] && echo "MEMORY WARN: codemap last verified $D, $N commits since — new modules may be missing from it"
+    fi
+  fi
+)
+if [ -z "$OUT" ]; then [ "$QUIET" = "-q" ] || echo "MEMORY: no warnings"
+else echo "$OUT"; echo "MEMORY: $(echo "$OUT" | wc -l | tr -d ' ') warning(s) — treat the referenced notes as unverified until re-checked"; fi
+exit 0

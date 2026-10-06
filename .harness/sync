@@ -1,0 +1,34 @@
+#!/bin/sh
+# Skill 동기화: 원본(.harness/skills, .harness/project/skills) → 각 CLI가 읽는 위치.
+#   Claude Code: .claude/skills/<name>/SKILL.md     Codex CLI: .agents/skills/<name>/SKILL.md
+# usage: .harness/sync                 복사 (원본에 있는 이름만 덮어쓴다. 다른 skill은 건드리지 않는다)
+#        .harness/sync --check         어긋남만 보고 (exit 1)
+#        .harness/sync --remove <name> 쓰지 않는 skill을 원본과 두 복사본에서 지운다 (사용자 승인 후)
+# symlink 대신 복사를 쓴다 (Windows·도구 호환성). 생성물은 직접 고치지 말고 원본을 고친 뒤 다시 실행한다.
+
+cd "$(dirname "$0")/.." || exit 2
+TARGETS=".claude/skills .agents/skills"
+if [ "${1:-}" = "--remove" ]; then
+  name=${2:-}
+  case "$name" in ''|*/*|.*) echo "usage: .harness/sync --remove <skill-name>" >&2; exit 2 ;; esac
+  found=0
+  for d in ".harness/skills/$name" ".harness/project/skills/$name" ".claude/skills/$name" ".agents/skills/$name"; do
+    [ -d "$d" ] && { rm -rf "$d"; found=1; }
+  done
+  [ "$found" -eq 1 ] && echo "HARNESS SYNC: removed skill '$name'" || { echo "HARNESS SYNC: no such skill '$name'" >&2; exit 1; }
+  exit 0
+fi
+DRIFT=0
+for src in .harness/skills/*/ .harness/project/skills/*/; do
+  [ -f "${src}SKILL.md" ] || continue
+  name=$(basename "$src")
+  for t in $TARGETS; do
+    if [ "${1:-}" = "--check" ]; then
+      diff -rq "$src" "$t/$name" >/dev/null 2>&1 || { echo "HARNESS SYNC: out of date: $t/$name (run .harness/sync)"; DRIFT=1; }
+    else
+      mkdir -p "$t"; rm -rf "${t:?}/$name"; cp -R "$src" "$t/$name"
+    fi
+  done
+done
+[ "${1:-}" = "--check" ] && exit $DRIFT
+echo "HARNESS SYNC: done → $TARGETS"

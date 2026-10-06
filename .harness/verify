@@ -1,0 +1,70 @@
+#!/bin/sh
+# Verification Contract 진입점.
+# usage: .harness/verify [quick|full] [scope]
+# exit: 0 PASS / 1 FAIL / 2 NOT_CONFIGURED or usage error
+# 마지막 줄은 항상 `VERIFY: <PASS|FAIL|NOT_CONFIGURED> mode=<mode> ...` 형식.
+# 설정: .harness/project/verify.conf (QUICK_CMD, FULL_CMD, VERIFY_TIMEOUT)
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd) || exit 2
+cd "$ROOT" || exit 2
+
+MODE=${1:-quick}
+VERIFY_SCOPE=${2:-}
+export VERIFY_SCOPE
+case "$MODE" in quick|full) ;; *) echo "usage: .harness/verify [quick|full] [scope]" >&2; exit 2 ;; esac
+
+QUICK_CMD=""; FULL_CMD=""; VERIFY_TIMEOUT=0
+CONF=.harness/project/verify.conf
+[ -f "$CONF" ] && . "./$CONF"
+
+if [ "$MODE" = quick ]; then CMD=$QUICK_CMD; else CMD=$FULL_CMD; fi
+if [ -z "$CMD" ]; then
+  echo "VERIFY: NOT_CONFIGURED mode=$MODE (set $(echo "$MODE" | tr a-z A-Z)_CMD in $CONF — NOT a pass)"
+  exit 2
+fi
+
+mkdir -p .harness/state
+LOG=.harness/state/last-verify.log
+START=$(date +%s)
+
+# 시간 제한: `timeout`이 있으면 쓰고, 없으면(macOS 기본) 감시 프로세스로 대신한다.
+TIMED_OUT=0
+if [ "${VERIFY_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$VERIFY_TIMEOUT" sh -c "$CMD" >"$LOG" 2>&1; RC=$?
+    [ "$RC" -eq 124 ] && TIMED_OUT=1
+  else
+    FLAG=.harness/state/.verify-timeout; rm -f "$FLAG"
+    sh -c "$CMD" >"$LOG" 2>&1 &
+    PID=$!
+    # 감시 프로세스는 출력을 물려받지 않게 한다 (물려받으면 `verify | tail` 같은 파이프가 sleep이 끝날 때까지 닫히지 않는다)
+    (
+      sleep "$VERIFY_TIMEOUT" & SP=$!
+      trap 'kill "$SP" 2>/dev/null; exit 0' TERM INT
+      wait "$SP"
+      if kill -0 "$PID" 2>/dev/null; then : > "$FLAG"; pkill -TERM -P "$PID" 2>/dev/null; kill -TERM "$PID" 2>/dev/null; fi
+    ) >/dev/null 2>&1 &
+    WATCH=$!
+    wait "$PID"; RC=$?
+    kill "$WATCH" 2>/dev/null; wait "$WATCH" 2>/dev/null
+    [ -f "$FLAG" ] && { TIMED_OUT=1; rm -f "$FLAG"; [ "$RC" -eq 0 ] && RC=124; }
+  fi
+else
+  sh -c "$CMD" >"$LOG" 2>&1; RC=$?
+fi
+SECS=$(( $(date +%s) - START ))
+
+if [ "$RC" -eq 0 ]; then
+  tail -n 5 "$LOG"
+  [ "$MODE" = full ] && sh .harness/integrity-check
+  echo "VERIFY: PASS mode=$MODE scope=${VERIFY_SCOPE:-all} time=${SECS}s log=$LOG"
+  exit 0
+fi
+
+echo "---- last 40 lines of output ----"
+tail -n 40 "$LOG"
+echo "---- compare with .harness/project/baseline.md before calling it a new failure ----"
+[ "$MODE" = full ] && sh .harness/integrity-check
+[ "$TIMED_OUT" -eq 1 ] && echo "---- timed out after ${VERIFY_TIMEOUT}s (VERIFY_TIMEOUT in $CONF) ----"
+echo "VERIFY: FAIL mode=$MODE exit=$RC$([ "$TIMED_OUT" -eq 1 ] && echo " reason=timeout") scope=${VERIFY_SCOPE:-all} time=${SECS}s log=$LOG"
+exit 1

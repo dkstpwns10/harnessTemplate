@@ -1,0 +1,34 @@
+# Codex 명령 규칙 (샌드박스 밖 실행에 적용). 가장 제한적인 결정이 이긴다.
+# 확인: codex execpolicy check --pretty --rules .codex/rules/harness.rules -- git reset --hard HEAD
+# 인자 순서가 다른 변형(git push origin main --force 등)은 .harness/hooks/guard-bash.sh 가 잡는다.
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "미커밋 변경 손실. 되돌릴 파일 목록을 사용자에게 보여주고 직접 실행을 요청한다.",
+    match = ["git reset --hard HEAD"],
+    not_match = ["git reset HEAD file.txt"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease"]],
+    decision = "forbidden",
+    justification = "force push 금지. 필요하면 사용자가 직접 실행한다.",
+    match = ["git push --force origin main"],
+    not_match = ["git push origin main"],
+)
+
+prefix_rule(
+    pattern = ["git", ["clean", "rebase", "filter-branch"]],
+    decision = "forbidden",
+    justification = "추적되지 않은 파일 삭제 / history 재작성은 사용자가 직접 실행한다.",
+    match = ["git clean -fd", "git rebase -i HEAD~2"],
+)
+
+prefix_rule(
+    pattern = ["git", ["commit", "push", "merge", "stash", "restore", "checkout", "switch"]],
+    decision = "prompt",
+    justification = "사용자 승인 후 실행 (.harness/skills/git-rules).",
+    match = ["git commit -m x", "git push origin main"],
+    not_match = ["git status"],
+)

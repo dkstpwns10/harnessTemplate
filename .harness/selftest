@@ -1,0 +1,246 @@
+#!/bin/sh
+# 하네스 스크립트 자체 시험. 프로젝트를 건드리지 않도록 임시 복사본에서 돈다.
+# usage: .harness/selftest        (하네스를 고친 뒤, 템플릿을 업데이트한 뒤 실행)
+# exit 0 = 전부 통과, 1 = 실패 있음
+
+SRC=$(cd "$(dirname "$0")/.." && pwd) || exit 1
+TMP=$(mktemp -d) || exit 1
+trap 'rm -rf "$TMP"' EXIT
+W="$TMP/my project"                      # 공백이 든 경로에서도 동작해야 한다
+mkdir -p "$W"
+for f in AGENTS.md CLAUDE.md .harness .claude .agents .codex; do
+  [ -e "$SRC/$f" ] && cp -R "$SRC/$f" "$W/"
+done
+cd "$W" || exit 1
+rm -rf .harness/state; mkdir -p .harness/state
+# 프로젝트가 채운 설정이 시험에 섞이지 않게 비운다
+printf 'QUICK_CMD=""\nFULL_CMD=""\nVERIFY_TIMEOUT=0\n' > .harness/project/verify.conf
+printf '# Code Map\n\nLast verified: (미작성)\n' > .harness/project/codemap.md
+rm -f .harness/project/codemap.lock
+
+PASS=0; FAIL=0
+ok()  { PASS=$((PASS + 1)); }
+bad() { FAIL=$((FAIL + 1)); echo "FAIL: $*"; }
+expect_rc() { # expect_rc <want> <label> <cmd...>
+  want=$1; label=$2; shift 2
+  "$@" >"$TMP/out" 2>&1; rc=$?
+  if [ "$rc" -eq "$want" ]; then ok; else bad "$label (rc=$rc, want $want)"; fi
+}
+expect_out() { # expect_out <pattern> <label>   (직전 expect_rc의 출력에서 찾는다)
+  if grep -q -- "$1" "$TMP/out"; then ok; else bad "$2 (출력에 '$1' 없음)"; fi
+}
+refute_out() { if grep -q -- "$1" "$TMP/out"; then bad "$2 (출력에 '$1' 있음)"; else ok; fi; }
+
+# ---------- verify ----------
+expect_rc 2 "verify: 미설정은 exit 2" sh .harness/verify quick
+expect_out "VERIFY: NOT_CONFIGURED" "verify: NOT_CONFIGURED 표기"
+expect_rc 2 "verify: 잘못된 모드" sh .harness/verify nope
+printf 'QUICK_CMD='"'"'echo "scope=[$VERIFY_SCOPE]"'"'"'\nFULL_CMD="echo boom; exit 3"\nVERIFY_TIMEOUT=0\n' > .harness/project/verify.conf
+expect_rc 0 "verify: 통과" sh .harness/verify quick
+expect_out "VERIFY: PASS mode=quick scope=all" "verify: PASS 줄"
+expect_rc 0 "verify: scope 전달" sh .harness/verify quick :app
+expect_out "scope=\[:app\]" "verify: VERIFY_SCOPE가 명령에 전달됨"
+expect_out "VERIFY: PASS mode=quick scope=:app" "verify: scope 표기"
+expect_rc 1 "verify: 실패는 exit 1" sh .harness/verify full
+expect_out "VERIFY: FAIL mode=full exit=3" "verify: FAIL 줄과 원래 exit code"
+expect_out "boom" "verify: 실패 출력 인용"
+[ -f .harness/state/last-verify.log ] && ok || bad "verify: 로그 파일 생성"
+printf 'QUICK_CMD="sleep 20"\nFULL_CMD=""\nVERIFY_TIMEOUT=1\n' > .harness/project/verify.conf
+T0=$(date +%s); expect_rc 1 "verify: 시간 초과는 실패" sh .harness/verify quick; T1=$(date +%s)
+expect_out "reason=timeout" "verify: timeout 표기"
+[ $((T1 - T0)) -lt 10 ] && ok || bad "verify: timeout이 명령을 끊지 못함 ($((T1 - T0))s)"
+printf 'QUICK_CMD="true"\nFULL_CMD="true"\nVERIFY_TIMEOUT=60\n' > .harness/project/verify.conf
+T0=$(date +%s); sh .harness/verify quick | tail -n 1 > "$TMP/out"; T1=$(date +%s)
+expect_out "VERIFY: PASS" "verify: 시간 제한이 켜져 있어도 통과"
+[ $((T1 - T0)) -lt 10 ] && ok || bad "verify: 파이프로 받을 때 시간 제한만큼 멈춤 ($((T1 - T0))s)"
+sleep 1; pgrep -f "sleep 60" >/dev/null 2>&1 && bad "verify: 감시용 sleep 프로세스가 남음" || ok
+printf 'QUICK_CMD="true"\nFULL_CMD="true"\nVERIFY_TIMEOUT=0\n' > .harness/project/verify.conf
+
+# ---------- guard-bash ----------
+gb() { printf '{"tool_name":"Bash","tool_input":{"command":"%s","description":"x"}}' "$1" | sh .harness/hooks/guard-bash.sh >/dev/null 2>&1; echo $?; }
+blocked() { [ "$(gb "$1")" = 2 ] && ok || bad "guard-bash: 차단해야 함: $1"; }
+allowed() { [ "$(gb "$1")" = 0 ] && ok || bad "guard-bash: 통과해야 함: $1"; }
+blocked "git push --force origin main"
+blocked "git push origin main --force-with-lease"
+blocked "git push -f"
+blocked "cd sub && git reset --hard HEAD~1"
+blocked "git clean -fd"
+blocked "git checkout -- ."
+blocked "git restore ."
+blocked "git rebase -i HEAD~3"
+blocked "git branch -D feature"
+blocked "sudo git reset --hard"
+blocked "rm -rf /"
+blocked "rm -rf ~"
+blocked "rm -fr ."
+blocked "rm -rf *"
+blocked "cat .env"
+blocked "cat config/.env.production"
+blocked "head -n 3 secrets/server.pem"
+blocked "grep KEY .env"
+blocked "source .env"
+blocked "for k in A B; do if grep -q \"^$k=\" .env; then echo ok; fi; done"
+blocked "if cat .env; then true; fi"
+blocked "printenv"
+blocked "env"
+blocked "env | grep AWS"
+blocked "echo \$API_KEY"
+blocked "echo \${DB_PASSWORD}"
+blocked "git add -A"
+blocked "git add ."
+blocked "git add .env"
+blocked "psql -h prod-db.internal -c 'select 1'"
+blocked "./gradlew bootRun -Dspring.profiles.active=prod"
+blocked "mysql --host=production.db.example.com"
+blocked "kubectl --context prod-cluster delete pod x"
+blocked "curl -X DELETE https://api.prod.example.com/users/1"
+allowed "git push origin main"
+allowed "git status"
+allowed "git reset HEAD src/A.kt"
+allowed "git restore src/A.kt"
+allowed "git checkout main"
+allowed "git add src/A.kt .env.example"
+allowed "git commit -m 'fix: git reset --hard 설명 추가'"
+allowed "git commit -m 'docs: cat .env 금지 안내'"
+allowed "git log --grep='rm -rf /'"
+allowed "grep -rn printenv docs"
+allowed "rm -rf build"
+allowed "rm -rf ./build/tmp"
+allowed "rm -f a.txt"
+allowed "cat .env.example"
+allowed "ls -la .env"
+allowed "cat src/environment.kt"
+allowed "env FOO=bar ./gradlew test"
+allowed "echo .env >> .gitignore"
+allowed "./gradlew test"
+allowed "npm run test -- --env=jsdom"
+allowed "cat docs/production-db-guide.md"
+
+# ---------- guard-paths ----------
+gp() { printf '%s' "$1" | CLAUDE_PROJECT_DIR=/p HARNESS_UNLOCK="$2" sh .harness/hooks/guard-paths.sh >/dev/null 2>&1; echo $?; }
+pe() { [ "$(gp "$2" "$3")" = "$1" ] && ok || bad "guard-paths: want $1: $2 (unlock='$3')"; }
+ed() { printf '{"tool_name":"Edit","tool_input":{"file_path":"/p/%s"}}' "$1"; }
+pe 0 "$(ed src/A.kt)"
+pe 0 "$(ed .env.example)"
+pe 0 "$(ed .harness/project/verify.conf)"
+pe 0 "$(ed .harness/state/current.md)"
+pe 0 "$(ed docs/prd/x.md)"
+pe 2 "$(ed .env)"
+pe 2 "$(ed app/.env.local)"
+pe 2 "$(ed certs/server.pem)"
+pe 2 "$(ed .git/config)"
+pe 2 "$(ed AGENTS.md)"
+pe 2 "$(ed CLAUDE.md)"
+pe 2 "$(ed .harness/workflows/bugfix.md)"
+pe 2 "$(ed .claude/settings.json)"
+pe 2 "$(ed .agents/skills/x/SKILL.md)"
+pe 0 "$(ed AGENTS.md)" 1
+pe 2 "$(ed .env)" 1
+pe 2 '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"/p/.harness/x.ipynb"}}'
+pe 0 '{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/A.kt\n@@\n-a\n+b\n*** End Patch"}}'
+pe 2 '{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/A.kt\n@@\n*** Update File: AGENTS.md\n@@\n*** End Patch"}}'
+pe 2 '{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: .env\n+X=1\n*** End Patch"}}'
+
+# ---------- sync ----------
+expect_rc 0 "sync --check: 처음엔 일치" sh .harness/sync --check
+mkdir -p .harness/project/skills/myproj
+printf -- '---\nname: myproj\ndescription: test\n---\nbody\n' > .harness/project/skills/myproj/SKILL.md
+expect_rc 1 "sync --check: 프로젝트 skill 추가 후 어긋남" sh .harness/sync --check
+expect_rc 0 "sync: 복사" sh .harness/sync
+[ -f .claude/skills/myproj/SKILL.md ] && [ -f .agents/skills/myproj/SKILL.md ] && ok || bad "sync: 프로젝트 skill이 두 위치에 복사됨"
+echo "edit" >> .harness/skills/coding/SKILL.md
+expect_rc 1 "sync --check: 원본 수정 후 어긋남" sh .harness/sync --check
+sh .harness/sync >/dev/null
+expect_rc 0 "sync --check: 다시 일치" sh .harness/sync --check
+expect_rc 0 "sync --remove: skill 삭제" sh .harness/sync --remove myproj
+[ ! -d .claude/skills/myproj ] && [ ! -d .agents/skills/myproj ] && [ ! -d .harness/project/skills/myproj ] && ok || bad "sync --remove: 세 위치에서 모두 삭제"
+expect_rc 1 "sync --remove: 없는 skill" sh .harness/sync --remove nosuch
+expect_rc 2 "sync --remove: 경로 문자는 거부" sh .harness/sync --remove ../x
+expect_rc 0 "sync --check: 삭제 후 일치" sh .harness/sync --check
+for d in .harness/skills/*/; do
+  head -n 1 "$d/SKILL.md" | grep -q '^---$' && grep -q '^name: ' "$d/SKILL.md" && grep -q '^description: ' "$d/SKILL.md" && ok || bad "skill frontmatter: $d"
+done
+
+# ---------- memory-check ----------
+mkdir -p src/mail src/auth
+echo 'interface Mailer' > src/mail/Mailer.kt; echo a > src/auth/A.kt
+expect_rc 0 "memory-check: 빈 codemap" sh .harness/memory-check
+expect_out "MEMORY: no warnings" "memory-check: 경고 없음"
+cat >> .harness/project/codemap.md <<'EOF'
+| 메일 | `src/mail/Mailer.kt` 의 `Mailer.send` | `src/mail/Mailer.kt:3` |
+| 인증 | `src/auth` | |
+EOF
+sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "never been stamped" "memory-check: 도장 없음 경고"
+sh .harness/memory-check --stamp > "$TMP/out" 2>&1; expect_out "stamped 2 path" "memory-check: --stamp"
+grep -q "^Last verified: [0-9]" .harness/project/codemap.md && ok || bad "memory-check: Last verified 갱신"
+sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "MEMORY: no warnings" "memory-check: 도장 직후 경고 없음"
+echo 'interface Mailer { fun x() }' > src/mail/Mailer.kt
+sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "src/mail/Mailer.kt changed since" "memory-check: 내용 변경 감지"
+echo b > src/auth/B.kt
+sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "src/auth changed since" "memory-check: 디렉터리에 파일 추가 감지"
+rm src/mail/Mailer.kt
+sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "missing path: src/mail/Mailer.kt" "memory-check: 사라진 경로"
+printf '# Current Task\n## Changed so far\n- `src/gone/X.kt`\n' > .harness/state/current.md
+sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "current.md references missing path: src/gone/X.kt" "memory-check: current.md의 사라진 경로"
+sh .harness/memory-check -q > "$TMP/out" 2>&1; expect_out "MEMORY WARN" "memory-check -q: 경고는 출력"
+
+# ---------- session-start hook ----------
+printf '# Current Task\n- Task: 시험 작업\n- Stage: 구현\n\n## Next\n3단계 진행\n' > .harness/state/current.md
+CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+expect_out "진행 중인 작업이 있다" "session-start: 작업 알림"
+expect_out "Task: 시험 작업" "session-start: 작업명"
+expect_out "Next: 3단계 진행" "session-start: 다음 행동"
+expect_out "코드 구조 기억이 있다" "session-start: codemap 안내"
+rm .harness/state/current.md
+CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+refute_out "진행 중인 작업" "session-start: 작업 없으면 조용함"
+
+# ---------- git 없는 폴더 ----------
+sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "skipped (not a git repo)" "integrity-check: git 없으면 건너뜀"
+
+# ---------- integrity-check / memory-check (git) ----------
+if command -v git >/dev/null 2>&1; then
+  g() { git -c user.email=t@t -c user.name=t "$@"; }
+  mkdir -p src/test tests web
+  printf 'assertEquals(1, f())\nassertTrue(ok)\n@Test fun a() {}\n' > src/test/FooTest.kt
+  printf 'def test_a():\n    assert f() == 1\n    assert g() == 2\n' > tests/test_foo.py
+  printf "it('a', () => { expect(f()).toBe(1); expect(g()).toBe(2) })\n" > web/foo.spec.ts
+  printf 'x\n' > src/test/BarTest.kt
+  git init -q . && g add -A >/dev/null 2>&1 && g commit -qm init
+  sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "INTEGRITY: no warnings" "integrity: 변경 없음"
+  printf 'assertNotNull(f())\n@Test fun a() {}\n@Test fun b() { assertEquals(2, g()) }\n' > src/test/FooTest.kt
+  sh .harness/integrity-check > "$TMP/out" 2>&1; refute_out "FooTest.kt" "integrity: assertion이 줄지 않은 테스트 수정은 경고 없음"
+  printf '@Disabled\n@Test fun a() {}\n' > src/test/FooTest.kt
+  sh .harness/integrity-check > "$TMP/out" 2>&1
+  expect_out "assertion-like lines decreased in src/test/FooTest.kt" "integrity: assertion 감소 (Kotlin)"
+  expect_out "skip/disable/only added in src/test/FooTest.kt" "integrity: @Disabled 추가"
+  printf 'import pytest\n@pytest.mark.skip\ndef test_a():\n    pass\n' > tests/test_foo.py
+  sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "tests/test_foo.py" "integrity: pytest skip / assert 감소"
+  printf "it.skip('a', () => {})\n" > web/foo.spec.ts
+  sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "web/foo.spec.ts" "integrity: JS it.skip"
+  printf 'for (let attempt = 1; attempt <= 3; attempt++) { try { expect(f()).toBe(1); expect(g()).toBe(2); break } catch (e) {} }\n' > web/foo.spec.ts
+  sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "retry-like construct added in web/foo.spec.ts" "integrity: 재시도 추가"
+  rm src/test/BarTest.kt
+  sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "test file deleted: src/test/BarTest.kt" "integrity: 테스트 파일 삭제"
+  echo 'QUICK_CMD="true" # changed' >> .harness/project/verify.conf
+  sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "verification config changed: .harness/project/verify.conf" "integrity: 검증 설정 변경"
+  expect_rc 0 "verify full: 경고가 있어도 PASS (경고는 실패가 아님)" sh .harness/verify full
+  expect_out "INTEGRITY:.*warning" "verify full: INTEGRITY 요약 출력"
+  # 커밋 누적 경고
+  g add -A >/dev/null 2>&1; g commit -qm c1
+  sed 's/^Last verified:.*/Last verified: 2000-01-01/' .harness/project/codemap.md > "$TMP/cm" && cp "$TMP/cm" .harness/project/codemap.md
+  MEMORY_STALE_COMMITS=2 sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "commits since" "memory-check: 커밋 누적 경고"
+else
+  echo "SKIP: git 없음 — integrity/commit 시험 건너뜀"
+fi
+
+# ---------- 설정 파일 형식 ----------
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c "import json;json.load(open('.claude/settings.json'));json.load(open('.codex/hooks.json'))" 2>"$TMP/out" && ok || bad "JSON 설정 파싱: $(cat "$TMP/out")"
+fi
+for a in .claude/agents/*.md; do
+  grep -q '^name: ' "$a" && grep -q '^tools: ' "$a" && ! grep '^tools:' "$a" | grep -Eq 'Edit|Write' && ok || bad "agent가 읽기 전용이 아님: $a"
+done
+
+echo "SELFTEST: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

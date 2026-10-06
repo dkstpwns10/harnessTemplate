@@ -1,0 +1,4 @@
+# Codex CLI 프로젝트 설정 (프로젝트를 trusted로 표시해야 로드된다).
+# 모델은 지정하지 않는다 — Tier 매핑은 .harness/project/tiers.md 를 보고 사용자가 고른다.
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"

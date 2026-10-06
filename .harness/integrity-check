@@ -1,0 +1,39 @@
+#!/bin/sh
+# Verification Integrity 경고 (실패시키지 않는다 — 감지하고 알린다).
+# 미커밋 변경(HEAD 대비)에서 테스트 약화 신호를 찾는다. git이 없으면 건너뛴다.
+# 경고는 "부정행위"가 아니라 "정당성 설명이 필요한 변경"이다 (testing skill).
+
+cd "$(dirname "$0")/.." || exit 0
+[ -f .harness/sync ] && sh .harness/sync --check
+[ -f .harness/memory-check ] && sh .harness/memory-check -q
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "INTEGRITY: skipped (not a git repo)"; exit 0; }
+git rev-parse HEAD >/dev/null 2>&1 || { echo "INTEGRITY: skipped (no commits yet)"; exit 0; }
+
+# 테스트 파일 판별 (프로젝트에 맞게 조정)
+TEST_RE='(^|/)(tests?|__tests__|spec|specs)/|[Tt]est[s]?\.[a-z]+$|[._]spec\.[a-z]+$|_test\.[a-z]+$'
+# 검증 설정 파일
+CONF_RE='(^|/)(\.github/workflows/|\.gitlab-ci\.yml|Jenkinsfile|\.harness/project/verify\.conf|detekt.*\.yml|\.editorconfig)$'
+ASSERT_RE='assert|expect\(|verify\(|should|@Test|\bit\(|\btest\('
+RETRY_RE='retry|retries|@Retry|RepeatedTest|RetryingTest|flaky|MAX_ATTEMPTS|maxAttempts|attempt[s]?[[:space:]]*[<>=+]|rerunFailingTests|--rerun'
+SKIP_RE='@Ignore|@Disabled|\.skip\(|\bxit\(|\bxdescribe\(|\.only\(|pytest\.mark\.skip|@pytest\.mark\.xfail|t\.Skip\(|assumeTrue\(false'
+
+WARN=0
+warn() { echo "INTEGRITY WARN: $*"; WARN=$((WARN + 1)); }
+
+FILES=$(git diff HEAD --name-only --diff-filter=ACMRD 2>/dev/null)
+for f in $FILES; do
+  if echo "$f" | grep -Eq "$CONF_RE"; then warn "verification config changed: $f"; fi
+  echo "$f" | grep -Eq "$TEST_RE" || continue
+  if [ ! -e "$f" ]; then warn "test file deleted: $f"; continue; fi
+  DIFF=$(git diff HEAD -U0 -- "$f")
+  REM=$(echo "$DIFF" | grep -E '^-[^-]' | grep -Eci "$ASSERT_RE")
+  ADD=$(echo "$DIFF" | grep -E '^\+[^+]' | grep -Eci "$ASSERT_RE")
+  [ "$REM" -gt "$ADD" ] && warn "assertion-like lines decreased in $f (removed $REM, added $ADD)"
+  SK=$(echo "$DIFF" | grep -E '^\+[^+]' | grep -Eci "$SKIP_RE")
+  [ "$SK" -gt 0 ] && warn "skip/disable/only added in $f ($SK)"
+  RT=$(echo "$DIFF" | grep -E '^\+[^+]' | grep -Eci "$RETRY_RE")
+  [ "$RT" -gt 0 ] && warn "retry-like construct added in $f ($RT) — a retry hides a failure instead of fixing it"
+done
+
+[ "$WARN" -eq 0 ] && echo "INTEGRITY: no warnings" || echo "INTEGRITY: $WARN warning(s) — explain legitimacy in the completion report"
+exit 0
