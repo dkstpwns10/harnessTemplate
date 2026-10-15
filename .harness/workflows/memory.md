@@ -7,7 +7,10 @@
 | `.harness/state/current.md` | 진행 중인 **작업 하나**의 상태 (등급, 계획, 한 일, 다음 행동) | 작업이 끝나면 지운다 | 단계가 바뀔 때, 멈출 때, 턴을 끝내기 전(다단계 작업) | 개인 (git 제외) |
 | `.harness/project/codemap.md` | **코드 구조에 대한 오래 유효한 사실** (모듈 책임, 진입점, 재사용할 abstraction, 확인된 함정) | 코드가 바뀔 때까지 | 조사·구현에서 새 사실을 확인했을 때 (사용자 승인 후) | 커밋 |
 | `docs/prd/<slug>.md` | 요구사항, AC, 변경 이력 | 기능 수명 | requirements workflow | 커밋 |
+| `docs/tickets/<prd-slug>/NN-*.md` | 큰 기능을 나눈 티켓 (Status, Blocked by, Notes) | 기능 수명 | feature workflow의 티켓 분할 | 커밋 |
 | `docs/decisions.md` | 결정과 이유 한 줄 (왜 이렇게 했는가) | 영구 | 결정이 내려졌을 때 | 커밋 |
+| `docs/adr/NNNN-<slug>.md` | 무겁고 되돌리기 어려운 결정의 맥락·대안·결과 ([ADR 기준](#adr은-드물게)) | 영구 | 기준을 만족하는 결정일 때 (사용자 승인 후) | 커밋 |
+| `docs/glossary.md` | 도메인 용어의 뜻 — 이 프로젝트에서 그 단어가 가리키는 것, 피할 동의어 | 영구 | 요구사항·설계 대화에서 용어가 정해졌을 때 | 커밋 |
 | `.harness/project/project.md` | 프로젝트 식별, 기술, 코드만 봐서는 모르는 규칙 | 영구 | harness-init, 규칙이 생겼을 때 | 커밋 |
 | `.harness/project/baseline.md` | 도입 전부터 실패하던 검증 | 해소될 때까지 | 사용자 승인 후 | 커밋 |
 | `docs/improvements.md` | 하네스 자체의 개선 후보 | 처리될 때까지 | 반복 문제를 봤을 때 | 커밋 |
@@ -19,9 +22,24 @@
 2. **근거를 함께 적는다.** codemap과 current.md의 사실에는 파일 경로를 backtick으로 적는다 (예: `src/auth/TokenService.kt`). `.harness/memory-check`가 그 경로가 아직 있는지, 그리고 codemap이 가리키는 파일의 **내용이 마지막 확인 이후 바뀌었는지** 검사한다.
 3. **기억은 힌트지 사실이 아니다.** 기록을 근거로 코드를 고치기 전에 해당 파일을 실제로 읽어 확인한다. 기록과 코드가 다르면 코드가 맞다 — 기록을 고치자고 제안한다.
 4. **codemap에 넣지 않는 것**: 코드를 열면 바로 보이는 것, 일반 기술 지식, 작업 진행 상황, 추측. 한 번의 조사 비용이 컸고 다음에도 필요할 사실만 넣는다. 최대 150줄.
-5. **AI는 codemap·decisions·baseline 변경을 제안하고, 사용자 승인 후 기록한다.** current.md는 승인 없이 갱신한다.
+5. **AI는 codemap·decisions·ADR·baseline 변경을 제안하고, 사용자 승인 후 기록한다.** 용어집은 사용자가 대화에서 뜻을 정한 것 자체가 승인이므로 바로 기록한다. current.md는 승인 없이 갱신한다.
 6. **확인 도장 (`--stamp`)**: codemap 항목을 실제 코드와 대조해 맞다고 확인했거나 고친 뒤, 사용자 승인을 받아 `.harness/memory-check --stamp`를 실행한다. 그 시점의 내용 지문이 `.harness/project/codemap.lock`에 기록되고(커밋 대상) `Last verified`가 갱신된다. 이후 그 파일이 바뀌면 `MEMORY WARN: … changed since codemap was last verified`가 뜬다. **대조하지 않고 경고를 없애려고 stamp를 찍지 않는다.**
 7. **작업을 마칠 때 (task-done)**: current.md에서 오래 유효한 사실을 골라 codemap/decisions 갱신을 제안하고, current.md는 지운다.
+
+## 용어집 (`docs/glossary.md`)
+
+- 형식: `| 용어 | 뜻 (한두 문장) | 쓰지 않는 말 |`. 처음 필요할 때 만든다.
+- **구현 세부를 넣지 않는다** (클래스명, 테이블, 경로는 codemap 몫). 사양도 메모장도 아니다.
+- 코드·테스트 이름·PRD·티켓은 용어집의 말을 쓴다. 코드의 이름이 용어집과 다르면 고치자고 제안한다.
+
+## ADR은 드물게
+
+결정은 기본적으로 `docs/decisions.md`에 한 줄이다. 아래 **세 가지를 모두** 만족할 때만 `docs/adr/NNNN-<slug>.md`를 제안한다 (형식: 상태 · 맥락 · 결정 · 검토한 대안 · 결과).
+1. **되돌리기 어렵다**: 나중에 마음을 바꾸는 비용이 크다.
+2. **맥락 없이 보면 의아하다**: 다음 사람이 "왜 이렇게 했지?"라고 물을 것이다.
+3. **실제 trade-off였다**: 진지하게 검토한 대안이 있었다.
+
+하나라도 아니면 한 줄로 충분하다. ADR을 쓰면 `decisions.md`의 한 줄에 그 경로를 근거로 적는다.
 
 ## 세션 시작 시
 

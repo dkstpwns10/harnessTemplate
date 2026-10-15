@@ -1,0 +1,50 @@
+#!/bin/sh
+# 하네스 파일 변경 감지 (경고만, 항상 exit 0).
+# guard-paths는 Edit/Write만 막는다. Bash(sed -i, 리다이렉트)나 다른 도구로 바뀐 하네스 파일은 여기서 드러난다.
+# usage: .harness/manifest           검사 (-q: 경고가 없으면 아무것도 출력하지 않음)
+#        .harness/manifest --update  지금 상태를 .harness/manifest.lock 에 기록
+#                                    — 하네스 파일을 의도적으로 바꾼 뒤(템플릿 업데이트, 설정 병합) 사용자 승인 후 실행
+# 대상: AGENTS.md, CLAUDE.md, .claude/, .codex/, .harness/ 중 템플릿 소유 파일.
+# 제외: .harness/project/, .harness/state/ (프로젝트 소유), skill 복사본(.harness/sync --check 담당), 개인 설정.
+
+cd "$(dirname "$0")/.." || exit 0
+LOCK=.harness/manifest.lock
+
+list() {
+  for f in AGENTS.md CLAUDE.md; do [ -f "$f" ] && echo "$f"; done
+  find .claude .codex .harness -type f 2>/dev/null | grep -v \
+    -e '^\.claude/skills/' -e '^\.harness/project/' -e '^\.harness/state/' \
+    -e '^\.harness/manifest\.lock$' -e '^\.claude/settings\.local\.json$' -e '\.DS_Store$' | sort
+}
+sum() { cksum < "$1" | cut -d' ' -f1; }
+
+if [ "${1:-}" = "--update" ]; then
+  {
+    echo "# 하네스 파일 지문. .harness/manifest --update 가 만든다. 직접 고치지 않는다."
+    list | while IFS= read -r f; do printf '%s\t%s\n' "$(sum "$f")" "$f"; done
+  } > "$LOCK"
+  echo "HARNESS: manifest updated ($(grep -vc '^#' "$LOCK") file(s))"
+  exit 0
+fi
+
+QUIET=${1:-}
+if [ ! -f "$LOCK" ]; then
+  [ "$QUIET" = "-q" ] || echo "HARNESS: no manifest (.harness/manifest --update to create one)"
+  exit 0
+fi
+TAB=$(printf '\t')
+OUT=$(
+  grep -v '^#' "$LOCK" | while IFS="$TAB" read -r s f; do
+    if [ ! -f "$f" ]; then echo "HARNESS WARN: missing harness file: $f"
+    elif [ "$(sum "$f")" != "$s" ]; then echo "HARNESS WARN: harness file changed since manifest: $f"; fi
+  done
+  list | while IFS= read -r f; do
+    grep -v '^#' "$LOCK" | cut -f2 | grep -qxF "$f" || echo "HARNESS WARN: harness file not in manifest: $f"
+  done
+)
+if [ -z "$OUT" ]; then [ "$QUIET" = "-q" ] || echo "HARNESS: manifest ok"
+else
+  echo "$OUT"
+  echo "HARNESS: $(echo "$OUT" | wc -l | tr -d ' ') warning(s) — harness files changed outside an approved update. Tell the user; if intended, they approve .harness/manifest --update"
+fi
+exit 0

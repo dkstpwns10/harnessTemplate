@@ -55,6 +55,12 @@ expect_out "VERIFY: PASS" "verify: 시간 제한이 켜져 있어도 통과"
 [ $((T1 - T0)) -lt 10 ] && ok || bad "verify: 파이프로 받을 때 시간 제한만큼 멈춤 ($((T1 - T0))s)"
 sleep 1; pgrep -f "sleep 60" >/dev/null 2>&1 && bad "verify: 감시용 sleep 프로세스가 남음" || ok
 printf 'QUICK_CMD="true"\nFULL_CMD="true"\nVERIFY_TIMEOUT=0\n' > .harness/project/verify.conf
+rm -f .harness/state/last-verify.stamp
+expect_rc 1 "verify status: 기록이 없으면 exit 1" sh .harness/verify status
+expect_out "EVIDENCE: NONE" "verify status: NONE 표기"
+sh .harness/verify quick >/dev/null 2>&1
+expect_rc 0 "verify status: git 없으면 확인 불가지만 exit 0" sh .harness/verify status
+expect_out "EVIDENCE: UNKNOWN mode=quick result=PASS" "verify status: UNKNOWN 표기"
 
 # ---------- guard-bash ----------
 gb() { printf '{"tool_name":"Bash","tool_input":{"command":"%s","description":"x"}}' "$1" | sh .harness/hooks/guard-bash.sh >/dev/null 2>&1; echo $?; }
@@ -157,6 +163,19 @@ expect_rc 0 "sync --remove: skill 삭제" sh .harness/sync --remove myproj
 expect_rc 1 "sync --remove: 없는 skill" sh .harness/sync --remove nosuch
 expect_rc 2 "sync --remove: 경로 문자는 거부" sh .harness/sync --remove ../x
 expect_rc 0 "sync --check: 삭제 후 일치" sh .harness/sync --check
+mkdir -p .harness/project/skills/ui
+printf -- '---\nname: ui\ndescription: test\n---\nbody\n' > .harness/project/skills/ui/SKILL.md
+: > .harness/project/skills/ui/USER_INVOKED
+sh .harness/sync >/dev/null
+sed -n 2,4p .claude/skills/ui/SKILL.md > "$TMP/out"; expect_out "^disable-model-invocation: true" "sync: USER_INVOKED → Claude frontmatter 주입"
+grep -q 'disable-model-invocation' .agents/skills/ui/SKILL.md && bad "sync: Codex 복사본에는 Claude 필드를 넣지 않음" || ok
+grep -q 'allow_implicit_invocation: false' .agents/skills/ui/agents/openai.yaml 2>/dev/null && ok || bad "sync: USER_INVOKED → Codex openai.yaml 정책"
+[ ! -e .claude/skills/ui/USER_INVOKED ] && [ ! -e .agents/skills/ui/USER_INVOKED ] && ok || bad "sync: 마커 파일은 복사하지 않음"
+grep -q 'disable-model-invocation' .harness/project/skills/ui/SKILL.md && bad "sync: 원본 frontmatter는 그대로" || ok
+expect_rc 0 "sync --check: 변환 후에도 일치" sh .harness/sync --check
+rm .harness/project/skills/ui/USER_INVOKED
+expect_rc 1 "sync --check: 마커 제거 후 어긋남" sh .harness/sync --check
+sh .harness/sync --remove ui >/dev/null
 for d in .harness/skills/*/; do
   head -n 1 "$d/SKILL.md" | grep -q '^---$' && grep -q '^name: ' "$d/SKILL.md" && grep -q '^description: ' "$d/SKILL.md" && ok || bad "skill frontmatter: $d"
 done
@@ -186,14 +205,49 @@ sh .harness/memory-check -q > "$TMP/out" 2>&1; expect_out "MEMORY WARN" "memory-
 
 # ---------- session-start hook ----------
 printf '# Current Task\n- Task: 시험 작업\n- Stage: 구현\n\n## Next\n3단계 진행\n' > .harness/state/current.md
-CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh </dev/null > "$TMP/out" 2>&1
 expect_out "진행 중인 작업이 있다" "session-start: 작업 알림"
 expect_out "Task: 시험 작업" "session-start: 작업명"
 expect_out "Next: 3단계 진행" "session-start: 다음 행동"
 expect_out "코드 구조 기억이 있다" "session-start: codemap 안내"
+refute_out "^3단계 진행$" "session-start: 평소에는 current.md 전체를 넣지 않음"
+printf '{"session_id":"x","source":"startup"}' | CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+expect_out "진행 중인 작업이 있다" "session-start: startup은 요약만"
+refute_out "압축됐다" "session-start: startup에 압축 안내 없음"
+printf '{"session_id":"x","source":"compact"}' | CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+expect_out "context가 압축됐다" "session-start: compact 안내"
+expect_out "^## Next" "session-start: compact는 current.md 전체를 넣음"
+expect_out "EVIDENCE:" "session-start: compact는 검증 증거 상태를 넣음"
+printf '# Current Task\n- Task: t\n## Next\n- 다음\n' > .harness/state/current.md
+CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh </dev/null > "$TMP/out" 2>&1
+expect_out "^- Next: 다음$" "session-start: Next 줄의 목록 기호를 중복하지 않음"
+printf '# Current Task\n- Task: 시험 작업\n- Stage: 구현\n\n## Next\n3단계 진행\n' > .harness/state/current.md
 rm .harness/state/current.md
-CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+printf '{"source":"compact"}' | CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+refute_out "진행 중인 작업" "session-start: 작업 없으면 compact도 조용함"
+CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh </dev/null > "$TMP/out" 2>&1
 refute_out "진행 중인 작업" "session-start: 작업 없으면 조용함"
+
+# ---------- manifest (하네스 파일 변경 감지) ----------
+rm -f .harness/manifest.lock
+sh .harness/manifest -q > "$TMP/out" 2>&1; refute_out "WARN" "manifest: lock 없으면 -q는 조용함"
+sh .harness/manifest --update > "$TMP/out" 2>&1; expect_out "manifest updated" "manifest: --update"
+grep -q '	AGENTS.md$' .harness/manifest.lock && grep -q '	.harness/verify$' .harness/manifest.lock && ok || bad "manifest: 진입 문서·스크립트 포함"
+grep -Eq '	(\.harness/(project|state)/|\.claude/skills/)' .harness/manifest.lock && bad "manifest: 프로젝트 소유·skill 복사본은 제외" || ok
+sh .harness/manifest > "$TMP/out" 2>&1; expect_out "HARNESS: manifest ok" "manifest: 직후 경고 없음"
+echo "# x" >> .harness/project/project.md; echo s > .harness/state/s.txt
+sh .harness/manifest > "$TMP/out" 2>&1; expect_out "HARNESS: manifest ok" "manifest: 프로젝트 소유·state 변경은 무시"
+cp AGENTS.md "$TMP/agents.bak"; echo "- 몰래 추가한 규칙" >> AGENTS.md
+echo x > .harness/workflows/new.md
+mv .harness/roles.md "$TMP/roles.bak"
+sh .harness/manifest -q > "$TMP/out" 2>&1
+expect_out "harness file changed since manifest: AGENTS.md" "manifest: Bash 등으로 바뀐 하네스 파일 감지"
+expect_out "not in manifest: .harness/workflows/new.md" "manifest: 새 하네스 파일 감지"
+expect_out "missing harness file: .harness/roles.md" "manifest: 사라진 하네스 파일 감지"
+refute_out "manifest: .harness/workflows/bugfix.md" "manifest: 경로 앞부분이 같은 파일과 혼동하지 않음"
+sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "HARNESS WARN" "integrity-check: manifest 경고 포함"
+cp "$TMP/agents.bak" AGENTS.md; rm .harness/workflows/new.md; mv "$TMP/roles.bak" .harness/roles.md
+sh .harness/manifest > "$TMP/out" 2>&1; expect_out "HARNESS: manifest ok" "manifest: 되돌리면 경고 사라짐"
 
 # ---------- git 없는 폴더 ----------
 sh .harness/integrity-check > "$TMP/out" 2>&1; expect_out "skipped (not a git repo)" "integrity-check: git 없으면 건너뜀"
@@ -230,6 +284,78 @@ if command -v git >/dev/null 2>&1; then
   g add -A >/dev/null 2>&1; g commit -qm c1
   sed 's/^Last verified:.*/Last verified: 2000-01-01/' .harness/project/codemap.md > "$TMP/cm" && cp "$TMP/cm" .harness/project/codemap.md
   MEMORY_STALE_COMMITS=2 sh .harness/memory-check > "$TMP/out" 2>&1; expect_out "commits since" "memory-check: 커밋 누적 경고"
+  g add -A >/dev/null 2>&1; g commit -qm c2
+
+  # 검증 증거가 지금 코드 상태에 대한 것인가 (verify status)
+  printf 'QUICK_CMD="true"\nFULL_CMD="echo nope; exit 1"\nVERIFY_TIMEOUT=0\n' > .harness/project/verify.conf
+  g add -A >/dev/null 2>&1; g commit -qm c3
+  sh .harness/verify quick >/dev/null 2>&1
+  expect_rc 0 "verify status: 검증 직후 FRESH" sh .harness/verify status
+  expect_out "EVIDENCE: FRESH mode=quick result=PASS" "verify status: FRESH 표기"
+  echo "// edit" >> src/test/FooTest.kt
+  expect_rc 1 "verify status: 추적 파일 수정 후 STALE" sh .harness/verify status
+  expect_out "EVIDENCE: STALE" "verify status: STALE 표기"
+  sh .harness/verify quick >/dev/null 2>&1
+  expect_rc 0 "verify status: 다시 검증하면 FRESH" sh .harness/verify status
+  echo new > "src/New File.kt"
+  expect_rc 1 "verify status: 새 파일(공백 경로) 추가 후 STALE" sh .harness/verify status
+  rm "src/New File.kt"
+  expect_rc 0 "verify status: 되돌리면 다시 FRESH" sh .harness/verify status
+  echo scratch > .harness/state/scratch.txt
+  expect_rc 0 "verify status: .harness/state 변경은 무시" sh .harness/verify status
+  sh .harness/verify full >/dev/null 2>&1
+  expect_rc 1 "verify status: 최신이어도 FAIL 결과면 exit 1" sh .harness/verify status
+  expect_out "EVIDENCE: FRESH mode=full result=FAIL" "verify status: FAIL 결과 표기"
+  git checkout -q -- src/test/FooTest.kt
+  g add -A >/dev/null 2>&1; g commit -qm c4
+
+  # 범위 이탈 (current.md에 없는 변경 파일)
+  sh .harness/integrity-check > "$TMP/out" 2>&1; refute_out "scope:" "integrity scope: current.md 없으면 검사 안 함"
+  printf '# Current Task\n## Plan\n- [ ] 1. 수정 — `src/test/FooTest.kt:3`\n- [ ] 2. `web/`\n## Pre-existing changes\n없음\n## Changed so far\n- `*`\n' > .harness/state/current.md
+  echo "// a" >> src/test/FooTest.kt
+  echo "// b" >> web/foo.spec.ts
+  echo x > tests/extra_helper.py
+  sh .harness/integrity-check > "$TMP/out" 2>&1
+  refute_out "scope: src/test/FooTest.kt" "integrity scope: Plan의 파일(:줄 포함)은 경고 없음"
+  refute_out "scope: web/foo.spec.ts" "integrity scope: Plan의 디렉터리 아래는 경고 없음"
+  expect_out "scope: tests/extra_helper.py changed but is not in current.md" "integrity scope: 계획에 없는 새 파일 경고"
+  refute_out "scope: .harness/state" "integrity scope: .harness/state는 제외"
+  refute_out "scope: \*" "integrity scope: 기록 안의 * 를 glob으로 펼치지 않음"
+  printf -- '- `tests/extra_helper.py`\n' >> .harness/state/current.md
+  sh .harness/integrity-check > "$TMP/out" 2>&1; refute_out "scope:" "integrity scope: 기록하면 경고 사라짐"
+  rm .harness/state/current.md
+
+  # 비밀 정보 (토큰 모양은 실행 중에 조립한다 — 이 파일 자체가 검사에 걸리지 않게)
+  git checkout -q -- . 2>/dev/null; rm -f tests/extra_helper.py
+  sh .harness/integrity-check > "$TMP/out" 2>&1; refute_out "secret:" "integrity secret: 변경 없으면 경고 없음"
+  K="AKIA$(printf 'Q%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)"
+  printf 'val awsKey = "%s"\n' "$K" >> src/test/FooTest.kt
+  printf 'db:\n  password: "%s"\n' "hunter2-very-long" > app.yml
+  printf 'k = "%s" # harness:allow-secret\n' "$K" > fake_fixture.py
+  sh .harness/integrity-check > "$TMP/out" 2>&1
+  expect_out "secret: AWS access key in added lines of src/test/FooTest.kt" "integrity secret: 추가된 줄의 AWS 키"
+  expect_out "secret: hard-coded credential assignment in new file app.yml" "integrity secret: 새 파일의 비밀번호 대입"
+  refute_out "fake_fixture.py" "integrity secret: harness:allow-secret 표시는 건너뜀"
+  refute_out "$K" "integrity secret: 값은 출력하지 않음"
+  refute_out "hunter2" "integrity secret: 값은 출력하지 않음 (대입)"
+  expect_out "INTEGRITY: [1-9][0-9]* warning" "integrity secret: 경고 개수에 포함"
+  git checkout -q -- src/test/FooTest.kt; rm -f app.yml fake_fixture.py
+
+  # 압축 직후: current.md에 없는 변경 파일을 hook이 직접 계산한다
+  printf '# Current Task\n## Changed so far\n- `src/test/FooTest.kt`\n- `web/`\n' > .harness/state/current.md
+  echo "// c" >> src/test/FooTest.kt; echo "// d" >> web/foo.spec.ts; echo x > "src/Un listed.kt"; git mv tests/test_foo.py tests/test_moved.py >/dev/null
+  printf '{"source":"compact"}' | CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+  expect_out "current.md에 없는 파일" "session-start compact: 빠진 파일 목록 머리말"
+  expect_out "^- \`tests/test_moved.py\`" "session-start compact: 이름 바뀐 파일은 새 경로로"
+  expect_out "^- \`src/Un listed.kt\`$" "session-start compact: 공백이 든 경로를 한 줄로"
+  sed -n '/current.md에 없는 파일/,/^EVIDENCE/p' "$TMP/out" > "$TMP/miss"   # 빠진 목록 구간만 (current.md 본문도 출력되므로)
+  grep -q 'FooTest.kt' "$TMP/miss" && bad "session-start compact: 기록된 파일은 빠진 목록에 없음" || ok
+  grep -q 'web/foo.spec.ts' "$TMP/miss" && bad "session-start compact: 디렉터리 항목 아래는 빠진 목록에 없음" || ok
+  grep -q '\.harness/state' "$TMP/miss" && bad "session-start compact: .harness/state 제외" || ok
+  printf -- '- `tests/`\n- `src/`\n' >> .harness/state/current.md
+  printf '{"source":"compact"}' | CLAUDE_PROJECT_DIR="$W" sh .harness/hooks/session-start.sh > "$TMP/out" 2>&1
+  expect_out "모두 current.md에 기록돼 있다" "session-start compact: 다 기록되면 그렇다고 알림"
+  git mv tests/test_moved.py tests/test_foo.py >/dev/null; git checkout -q -- src/test/FooTest.kt web/foo.spec.ts; rm -f "src/Un listed.kt" .harness/state/current.md
 else
   echo "SKIP: git 없음 — integrity/commit 시험 건너뜀"
 fi
@@ -237,6 +363,11 @@ fi
 # ---------- 설정 파일 형식 ----------
 if command -v python3 >/dev/null 2>&1; then
   python3 -c "import json;json.load(open('.claude/settings.json'));json.load(open('.codex/hooks.json'))" 2>"$TMP/out" && ok || bad "JSON 설정 파싱: $(cat "$TMP/out")"
+  if python3 -c "import tomllib" 2>/dev/null; then
+    for t in .codex/config.toml .codex/agents/*.toml; do
+      python3 -c "import sys,tomllib;tomllib.load(open(sys.argv[1],'rb'))" "$t" 2>"$TMP/out" && ok || bad "TOML 파싱: $t $(cat "$TMP/out")"
+    done
+  fi
 fi
 for a in .claude/agents/*.md; do
   grep -q '^name: ' "$a" && grep -q '^tools: ' "$a" && ! grep '^tools:' "$a" | grep -Eq 'Edit|Write' && ok || bad "agent가 읽기 전용이 아님: $a"

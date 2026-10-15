@@ -17,7 +17,7 @@ Codex의 `model`은 지정하지 않는다 (세션 모델을 상속). 모델을 
 |---|---|---|---|
 | researcher | BALANCED | `model: sonnet` | `medium` |
 | prd-reviewer | BALANCED | `model: sonnet` | `medium` |
-| reviewer | BALANCED | `model: sonnet` | `medium` |
+| reviewer | BALANCED (FULL Spec 축은 호출 시 STRONG) | `model: sonnet` | `medium` |
 | architect | STRONG | `model: opus`, `effort: high` | `high` |
 | debugger | STRONG | `model: opus`, `effort: high` | `high` |
 

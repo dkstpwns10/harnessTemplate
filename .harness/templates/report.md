@@ -9,6 +9,7 @@ Task / Triage / Workflow:
 
 ## Verification
 VERIFY: (마지막 VERIFY 줄 그대로)
+EVIDENCE: (`.harness/verify status`의 출력 그대로 — FRESH여야 한다)
 INTEGRITY: (경고 목록과 각각의 정당성, 없으면 "경고 없음")
 Baseline 대비 새 실패: 없음 | …
 

@@ -1,11 +1,13 @@
 #!/bin/sh
 # Verification Integrity 경고 (실패시키지 않는다 — 감지하고 알린다).
 # 미커밋 변경(HEAD 대비)에서 테스트 약화 신호를 찾는다. git이 없으면 건너뛴다.
+# 진행 중 작업(current.md)이 있으면 계획에 없는 파일 변경도 알린다 (범위 이탈 감지).
 # 경고는 "부정행위"가 아니라 "정당성 설명이 필요한 변경"이다 (testing skill).
 
 cd "$(dirname "$0")/.." || exit 0
 [ -f .harness/sync ] && sh .harness/sync --check
 [ -f .harness/memory-check ] && sh .harness/memory-check -q
+[ -f .harness/manifest ] && sh .harness/manifest -q
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "INTEGRITY: skipped (not a git repo)"; exit 0; }
 git rev-parse HEAD >/dev/null 2>&1 || { echo "INTEGRITY: skipped (no commits yet)"; exit 0; }
 
@@ -34,6 +36,55 @@ for f in $FILES; do
   RT=$(echo "$DIFF" | grep -E '^\+[^+]' | grep -Eci "$RETRY_RE")
   [ "$RT" -gt 0 ] && warn "retry-like construct added in $f ($RT) — a retry hides a failure instead of fixing it"
 done
+
+# 비밀 정보: 추가된 줄(미커밋 diff)과 새 파일에서 키·토큰 모양을 찾는다. 값은 출력하지 않는다 (파일과 종류만).
+# 의도된 가짜 값(테스트 fixture)은 같은 줄에 `harness:allow-secret` 주석을 붙이면 건너뛴다. 더 강한 검사가 필요하면 gitleaks 등을 FULL_CMD에 연결한다.
+secret_kinds() { # stdin의 줄에서 찾은 비밀 종류를 출력
+  grep -v 'harness:allow-secret' > "$SECRET_TMP"
+  grep -Eq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$SECRET_TMP" && echo "private key"
+  grep -Eq 'AKIA[0-9A-Z]{16}' "$SECRET_TMP" && echo "AWS access key"
+  grep -Eq 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}' "$SECRET_TMP" && echo "GitHub token"
+  grep -Eq 'xox[abprs]-[A-Za-z0-9-]{10,}' "$SECRET_TMP" && echo "Slack token"
+  grep -Eq 'AIza[0-9A-Za-z_-]{35}' "$SECRET_TMP" && echo "Google API key"
+  grep -Eq 'sk-(ant-|proj-)?[A-Za-z0-9_-]{20,}' "$SECRET_TMP" && echo "API secret key (sk-)"
+  grep -Eiq '(password|passwd|secret|api_?key|access_?token|auth_?token|client_?secret)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]$]{8,}["'"'"']' "$SECRET_TMP" && echo "hard-coded credential assignment"
+  return 0
+}
+secret_warn() { # $KINDS의 줄마다 경고 (파이프 서브셸을 쓰지 않아야 WARN 개수가 남는다)
+  [ -n "$KINDS" ] || return 0
+  OLDIFS=$IFS; IFS='
+'
+  for k in $KINDS; do warn "secret: $k in $1 (value not shown) — remove it, or mark an intentional fake with harness:allow-secret"; done
+  IFS=$OLDIFS
+}
+SECRET_TMP=$(mktemp) || SECRET_TMP=/dev/null
+for f in $FILES; do
+  [ -f "$f" ] || continue
+  case "$f" in .harness/state/*) continue ;; esac
+  KINDS=$(git diff HEAD -U0 -- "$f" | grep -E '^\+[^+]' | secret_kinds)
+  secret_warn "added lines of $f"
+done
+for f in $(git ls-files -o --exclude-standard 2>/dev/null); do
+  case "$f" in .harness/state/*) continue ;; esac
+  KINDS=$(grep -I '' "$f" 2>/dev/null | secret_kinds)
+  secret_warn "new file $f"
+done
+rm -f "$SECRET_TMP"
+
+# 범위 이탈: 바뀐 파일(미커밋 + 추적 안 됨)이 current.md에 backtick 경로로 적혀 있는가.
+# Plan / Pre-existing changes / Changed so far 어디든 적혀 있으면 된다. 디렉터리를 적으면 그 아래 전체를 덮는다.
+CUR=.harness/state/current.md
+if [ -f "$CUR" ]; then
+  set -f                                   # 기록 안의 `*` 같은 토큰이 glob으로 펼쳐지지 않게
+  KNOWN=$(grep -o '`[^` ]*`' "$CUR" | tr -d '`' | sed -e 's/:[0-9][0-9,:-]*$//' -e 's#^\./##' -e 's#/$##' | sort -u)
+  CHANGED=$( { git diff HEAD --name-only 2>/dev/null; git ls-files -o --exclude-standard 2>/dev/null; } | grep -v '^\.harness/state/' | sort -u)
+  for f in $CHANGED; do
+    hit=0
+    for k in $KNOWN; do case "$f" in "$k"|"$k"/*) hit=1; break ;; esac; done
+    [ "$hit" -eq 0 ] && warn "scope: $f changed but is not in current.md (Plan / Pre-existing / Changed so far) — out of plan, or current.md is behind"
+  done
+  set +f
+fi
 
 [ "$WARN" -eq 0 ] && echo "INTEGRITY: no warnings" || echo "INTEGRITY: $WARN warning(s) — explain legitimacy in the completion report"
 exit 0

@@ -14,6 +14,7 @@ Role: Requirements Analyst (메인, STRONG) → PRD Reviewer (subagent `prd-revi
   - MEDIUM: 기본값 제안, 필요할 때만 질문
   - LOW: 기본값을 정하고 묻지 않음 (Assumption으로 기록)
 - 한 번에 **최대 5개**, CRITICAL/HIGH 우선, 각 질문에 선택지와 추천 기본값을 붙인다. 코드/문서에서 답을 찾을 수 있는 질문은 하지 않는다 (Researcher 먼저).
+- **용어**: `docs/glossary.md`가 있으면 먼저 읽는다. 사용자가 용어집과 다른 뜻으로 쓰거나("용어집의 '취소'는 주문 전체인데, 부분 취소를 말하는 건가?"), 한 단어가 두 개념을 가리키면("계정 — 고객인가 로그인 사용자인가?") 바로 짚는다. 사용자의 설명이 코드와 어긋나면 그것도 짚는다. 사용자가 뜻을 정하면 그 자리에서 `docs/glossary.md`에 한 줄 기록한다 (파일이 없으면 이때 만든다).
 
 ## 2. Draft PRD → Deep Dive → Gap/Risk
 
@@ -31,7 +32,7 @@ Role: Requirements Analyst (메인, STRONG) → PRD Reviewer (subagent `prd-revi
 
 - 사용자의 명시적 승인("확정", "OK" 등)이 있어야 `Status: FINAL`. 승인 전 구현 금지.
 - Handoff: `.harness/state/current.md`에 PRD 경로, 등급, 다음 단계 한 줄. **새 세션에서 구현 시작을 권장**한다 (인터뷰 context는 구현에 필요 없다).
-- 주요 결정은 `docs/decisions.md`에 한 줄 추가 (날짜, 결정, 이유).
+- 주요 결정은 `docs/decisions.md`에 한 줄 추가 (날짜, 결정, 이유). 아래 세 조건을 모두 만족하는 결정만 ADR 파일로 남긴다 ([memory](memory.md)).
 
 ## 요구사항 변경
 

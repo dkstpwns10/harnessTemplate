@@ -10,7 +10,7 @@ Role = 책임. 기술 지식은 Skill, 순서는 Workflow, 능력 수준은 Tier
 | Architect | subagent `architect` | STRONG | 구조 설계, 기술 선택, trade-off, 영향 분석 | 구현하지 않는다. 읽기 전용 |
 | Researcher | subagent `researcher` | BALANCED (단순 탐색은 FAST) | 저장소·문서·의존성 조사, 영향 범위 | 코드를 수정하지 않는다. 읽기 전용 |
 | Implementer | 메인 세션 | BALANCED (다중 파일·복잡: STRONG) | 코드 수정, 테스트 작성 | 무관한 파일 수정 금지, 기존 abstraction 먼저 조사 |
-| Reviewer | subagent `reviewer` | BALANCED (FULL: STRONG) | 버그·architecture 위반·보안·테스트/요구사항 누락 탐색 | Implementer의 설명을 전달받지 않는다 (입력: PRD/요청 + diff + 검증 결과) |
+| Reviewer | subagent `reviewer` | BALANCED (FULL의 Spec 축: STRONG) | Spec 축(요구사항·정확성·보안·테스트)과 Standards 축(`coding-standards.md`·구조·smell)을 분리해 검토 | Implementer의 설명을 전달받지 않는다 (입력: PRD/요청 + diff + 검증 결과). 코딩 규칙 적용은 구현자가 아니라 Reviewer 몫 |
 | Debugger | subagent `debugger` | STRONG (충돌 가설: REASONING) | 증거 수집, 가설 생성/검증, root cause, 수정 제안 | 추측만으로 수정하지 않는다. 코드를 직접 고치지 않고 제안한다 |
 
 ## 독립성 규칙
@@ -22,7 +22,7 @@ Role = 책임. 기술 지식은 Skill, 순서는 Workflow, 능력 수준은 Tier
 
 모든 Role의 보고는 [handoff 형식](templates/handoff.md)을 따른다. Role별 추가 섹션만 아래에 둔다.
 
-- Reviewer: `Findings`를 `[BLOCKER] / [MAJOR] / [MINOR]`로 분류, 각 항목에 `file:line`과 근거
+- Reviewer: `## Spec`과 `## Standards`로 나눈 `Findings`, 각각 `[BLOCKER] / [MAJOR] / [MINOR]`, 각 항목에 `file:line`과 근거
 - Debugger: `Hypotheses` 표 (Hypothesis / Prediction / Evidence / Supported·Rejected), `Root Cause`
 - Researcher: `Impact Map` (영향 파일·호출 관계), `Existing Abstractions`, `Codemap Updates` (codemap에 없거나 틀린, 오래 유효한 사실 — 없으면 "없음")
 - PRD Reviewer: 개선 제안 표 (Problem / Impact / Recommendation / Trade-offs / Priority)

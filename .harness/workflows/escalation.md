@@ -45,6 +45,7 @@ STATUS: BLOCKED | NEEDS USER DECISION
 |---|---|
 | Acceptance Criteria | PRD의 각 항목 ↔ 충족 근거(테스트명/동작 확인). PRD가 없으면 원 요청 문장 단위로 대응 |
 | Verification | `.harness/verify full` PASS (LIGHT는 quick PASS). 출력의 마지막 `VERIFY:` 줄 인용 |
+| Evidence | 보고 직전 `.harness/verify status`가 `EVIDENCE: FRESH` (검증 뒤 코드가 바뀌지 않음). `STALE`이면 다시 verify |
 | Integrity | `INTEGRITY` 경고가 있으면 정당성 근거 (아래) |
 | Review | BLOCKER/MAJOR 없음 (해당 등급) |
 | 남은 위험 / Not Verified / Open Questions | 모두 나열 |

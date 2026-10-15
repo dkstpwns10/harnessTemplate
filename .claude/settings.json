@@ -6,6 +6,8 @@
       "Bash(.harness/sync --check)",
       "Bash(.harness/memory-check)",
       "Bash(.harness/memory-check *)",
+      "Bash(.harness/manifest)",
+      "Bash(.harness/manifest -q)",
       "Bash(git status *)",
       "Bash(git diff *)",
       "Bash(git log *)",
@@ -22,6 +24,7 @@
       "Bash(git branch -d *)",
       "Bash(.harness/sync)",
       "Bash(.harness/memory-check --stamp)",
+      "Bash(.harness/manifest --update)",
       "Bash(.harness/sync --remove *)"
     ],
     "deny": [

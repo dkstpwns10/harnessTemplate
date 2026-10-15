@@ -1,9 +1,12 @@
 #!/bin/sh
 # Verification Contract 진입점.
 # usage: .harness/verify [quick|full] [scope]
+#        .harness/verify status     마지막 검증이 지금 코드 상태에 대한 것인지 확인 (EVIDENCE 줄)
 # exit: 0 PASS / 1 FAIL / 2 NOT_CONFIGURED or usage error
+#       status: 0 FRESH+PASS / 1 STALE·NONE·FAIL / 0 UNKNOWN(git 없음 — 확인 불가라고 보고한다)
 # 마지막 줄은 항상 `VERIFY: <PASS|FAIL|NOT_CONFIGURED> mode=<mode> ...` 형식.
 # 설정: .harness/project/verify.conf (QUICK_CMD, FULL_CMD, VERIFY_TIMEOUT)
+# 증거: 실행 직전의 작업 트리 지문을 .harness/state/last-verify.stamp 에 남긴다.
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd) || exit 2
 cd "$ROOT" || exit 2
@@ -11,7 +14,33 @@ cd "$ROOT" || exit 2
 MODE=${1:-quick}
 VERIFY_SCOPE=${2:-}
 export VERIFY_SCOPE
-case "$MODE" in quick|full) ;; *) echo "usage: .harness/verify [quick|full] [scope]" >&2; exit 2 ;; esac
+case "$MODE" in quick|full|status) ;; *) echo "usage: .harness/verify [quick|full|status] [scope]" >&2; exit 2 ;; esac
+STAMP=.harness/state/last-verify.stamp
+
+# 작업 트리 지문: HEAD + 미커밋 변경 + 추적 안 된 파일 내용. .harness/state 는 제외. git이 없으면 "nogit".
+tree_fp() {
+  git rev-parse --git-dir >/dev/null 2>&1 || { echo nogit; return; }
+  {
+    if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+      git rev-parse HEAD
+      git diff HEAD --binary -- . ':(exclude).harness/state' 2>/dev/null
+    else
+      git ls-files -z -c -- . ':(exclude).harness/state' | xargs -0 cksum 2>/dev/null
+    fi
+    git ls-files -z -o --exclude-standard -- . ':(exclude).harness/state' | xargs -0 cksum 2>/dev/null
+  } | cksum | cut -d' ' -f1
+}
+
+if [ "$MODE" = status ]; then
+  if [ ! -f "$STAMP" ]; then echo "EVIDENCE: NONE (no verify run recorded — run .harness/verify full)"; exit 1; fi
+  get() { sed -n "s/^$1=//p" "$STAMP" | head -n 1; }
+  DESC="mode=$(get mode) result=$(get result) scope=$(get scope) at=$(get at)"
+  NOW=$(tree_fp); WAS=$(get tree)
+  if [ "$NOW" = nogit ] || [ "$WAS" = nogit ]; then echo "EVIDENCE: UNKNOWN $DESC (not a git repo — cannot tell whether code changed since; say so in the report)"; exit 0; fi
+  if [ "$NOW" != "$WAS" ]; then echo "EVIDENCE: STALE $DESC (code changed since this verify run — run it again before reporting)"; exit 1; fi
+  echo "EVIDENCE: FRESH $DESC"
+  [ "$(get result)" = PASS ]; exit $?
+fi
 
 QUICK_CMD=""; FULL_CMD=""; VERIFY_TIMEOUT=0
 CONF=.harness/project/verify.conf
@@ -26,6 +55,8 @@ fi
 mkdir -p .harness/state
 LOG=.harness/state/last-verify.log
 START=$(date +%s)
+TREE=$(tree_fp)                      # 실행 전 지문: 검증 명령이 만드는 산출물은 증거 대상이 아니다
+stamp() { printf 'mode=%s\nresult=%s\nscope=%s\ntree=%s\nat=%s\n' "$MODE" "$1" "${VERIFY_SCOPE:-all}" "$TREE" "$(date '+%Y-%m-%dT%H:%M:%S')" > "$STAMP"; }
 
 # 시간 제한: `timeout`이 있으면 쓰고, 없으면(macOS 기본) 감시 프로세스로 대신한다.
 TIMED_OUT=0
@@ -55,12 +86,14 @@ fi
 SECS=$(( $(date +%s) - START ))
 
 if [ "$RC" -eq 0 ]; then
+  stamp PASS
   tail -n 5 "$LOG"
   [ "$MODE" = full ] && sh .harness/integrity-check
   echo "VERIFY: PASS mode=$MODE scope=${VERIFY_SCOPE:-all} time=${SECS}s log=$LOG"
   exit 0
 fi
 
+stamp FAIL
 echo "---- last 40 lines of output ----"
 tail -n 40 "$LOG"
 echo "---- compare with .harness/project/baseline.md before calling it a new failure ----"

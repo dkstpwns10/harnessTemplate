@@ -5,6 +5,10 @@
 #        .harness/sync --check         어긋남만 보고 (exit 1)
 #        .harness/sync --remove <name> 쓰지 않는 skill을 원본과 두 복사본에서 지운다 (사용자 승인 후)
 # symlink 대신 복사를 쓴다 (Windows·도구 호환성). 생성물은 직접 고치지 말고 원본을 고친 뒤 다시 실행한다.
+#
+# 사용자만 호출하는 skill: 원본 폴더에 빈 파일 USER_INVOKED 를 둔다. 원본 frontmatter는 표준 필드만 유지하고,
+# 복사할 때 CLI별 설정을 넣는다 — Claude: `disable-model-invocation: true`,
+# Codex: agents/openai.yaml 의 `policy.allow_implicit_invocation: false`. 마커 파일 자체는 복사하지 않는다.
 
 cd "$(dirname "$0")/.." || exit 2
 TARGETS=".claude/skills .agents/skills"
@@ -18,15 +22,39 @@ if [ "${1:-}" = "--remove" ]; then
   [ "$found" -eq 1 ] && echo "HARNESS SYNC: removed skill '$name'" || { echo "HARNESS SYNC: no such skill '$name'" >&2; exit 1; }
   exit 0
 fi
+
+STAGE=$(mktemp -d) || exit 2
+trap 'rm -rf "$STAGE"' EXIT
+
+# build <src dir/> <target> <out dir>: 원본을 복사하고 대상 CLI에 맞게 변환한다
+build() {
+  mkdir -p "$3"; cp -R "${1}." "$3/"; rm -f "$3/USER_INVOKED"
+  [ -f "${1}USER_INVOKED" ] || return 0
+  case "$2" in
+    .claude/skills)
+      awk 'NR==1 && $0=="---" {fm=1; print; next}
+           fm && $0=="---" {fm=0}
+           {print}
+           fm && /^description:/ && !done {print "disable-model-invocation: true"; done=1}' \
+        "$3/SKILL.md" > "$3/SKILL.md.tmp" && mv "$3/SKILL.md.tmp" "$3/SKILL.md" ;;
+    .agents/skills)
+      mkdir -p "$3/agents"
+      Y="$3/agents/openai.yaml"
+      grep -q 'allow_implicit_invocation' "$Y" 2>/dev/null || printf 'policy:\n  allow_implicit_invocation: false\n' >> "$Y" ;;
+  esac
+}
+
 DRIFT=0
 for src in .harness/skills/*/ .harness/project/skills/*/; do
   [ -f "${src}SKILL.md" ] || continue
   name=$(basename "$src")
   for t in $TARGETS; do
+    out="$STAGE/$t/$name"
+    build "$src" "$t" "$out"
     if [ "${1:-}" = "--check" ]; then
-      diff -rq "$src" "$t/$name" >/dev/null 2>&1 || { echo "HARNESS SYNC: out of date: $t/$name (run .harness/sync)"; DRIFT=1; }
+      diff -rq "$out" "$t/$name" >/dev/null 2>&1 || { echo "HARNESS SYNC: out of date: $t/$name (run .harness/sync)"; DRIFT=1; }
     else
-      mkdir -p "$t"; rm -rf "${t:?}/$name"; cp -R "$src" "$t/$name"
+      mkdir -p "$t"; rm -rf "${t:?}/$name"; cp -R "$out" "$t/$name"
     fi
   done
 done

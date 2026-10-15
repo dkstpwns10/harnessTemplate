@@ -32,3 +32,11 @@ prefix_rule(
     match = ["git commit -m x", "git push origin main"],
     not_match = ["git status"],
 )
+
+prefix_rule(
+    pattern = [[".harness/memory-check", ".harness/manifest"], ["--stamp", "--update"]],
+    decision = "prompt",
+    justification = "기억·하네스 지문 갱신은 대조/검토 후 사용자 승인으로만 (.harness/workflows/memory.md, README 업데이트 절차).",
+    match = [".harness/manifest --update", ".harness/memory-check --stamp"],
+    not_match = [".harness/manifest -q"],
+)

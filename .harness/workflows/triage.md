@@ -10,7 +10,7 @@ Workflow는 작업의 **종류**(feature/bugfix/refactor/investigation), 등급�
 | 실행 | 구현 → quick verify | 요약 PRD(필요 시) → 계획 → 구현 → quick verify → Review → full verify | 전체 Workflow: 전체 PRD + PRD Reviewer + Architect + Researcher → … → Review → full verify |
 | 생략 | PRD, Architecture, 별도 Review | Architecture(구조 변경 없으면), PRD Reviewer | 없음 |
 | Tier | FAST~BALANCED | BALANCED~STRONG | STRONG~REASONING |
-| Review | 본인 diff 점검 1회 | `reviewer` subagent | `reviewer` subagent (STRONG) 필수 |
+| Review | 본인 diff 점검 1회 | `reviewer` subagent (두 축을 한 번에) | `reviewer` 병렬 2회 필수: Spec(STRONG) + Standards(BALANCED) |
 | Verification | quick (공유 코드를 건드렸다면 완료 전 full). 주석·문서만 바꿨으면 생략할 수 있고, 생략했다고 보고한다 | quick 반복 + 완료 전 full | full + 변경 영역 테스트 추가 확인 |
 
 ### 위험 신호 (하나라도 → 최소 FULL, 크기와 무관)
@@ -19,8 +19,8 @@ Workflow는 작업의 **종류**(feature/bugfix/refactor/investigation), 등급�
 
 ## 판정 방식 (AI 제안 + 사용자 정정)
 
-1. AI가 한 줄로 제시한다: `Triage: STANDARD (다중 파일, 위험 신호 없음) — Workflow: feature`
-2. LIGHT/STANDARD는 정정이 없으면 바로 진행한다. **FULL은 사용자가 확인한 뒤** 진행한다.
+1. AI가 한 줄로 제시한다: `Triage: STANDARD (다중 파일, 위험 신호 없음) — Workflow: feature`. 따로 시연할 수 있는 동작이 3개 이상이면 `— Tickets: 3개 제안 (1. … / 2. … / 3. …)`을 붙인다.
+2. LIGHT/STANDARD는 정정이 없으면 바로 진행한다. **FULL이거나 Tickets 제안이 있으면 턴을 끝내고 답을 기다린다** (답이 없다고 스스로 확정하지 않는다).
 3. 작업 도중 범위·위험이 커지면 멈추고 재판정을 알린다 (예: LIGHT 중 DB 스키마를 건드리게 됨 → FULL).
 4. 등급과 Workflow를 `.harness/state/current.md`에 기록한다.
 
